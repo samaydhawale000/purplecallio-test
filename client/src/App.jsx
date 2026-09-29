@@ -8,8 +8,10 @@ import {
 } from '@purplecallio/react';
 import './App.css';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -198,7 +200,7 @@ function App() {
   useEffect(() => {
     if (!currentUser) return undefined;
     const releasePresence = () => {
-      fetch('/api/logout', {
+      fetch(`${API_BASE_URL}/api/logout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: currentUser.email }),

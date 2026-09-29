@@ -58,6 +58,14 @@ PURPLECALLIO_SIGNAL_URL=https://api.purplecallio.com
 
 A template file is included at `server/.env.example`.
 
+To point the client at a backend hosted outside the Vite development proxy, create `client/.env` and set:
+
+```env
+VITE_API_BASE_URL=http://localhost:3003
+```
+
+Leave this unset when using the local Vite proxy.
+
 ## Running locally
 
 ```bash
