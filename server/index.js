@@ -65,7 +65,7 @@ function finishCall(call, status) {
    }, TERMINAL_CALL_TTL_MS).unref?.();
 }
 
-app.use(cors({ origin: FRONTEND_ORIGIN }));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
