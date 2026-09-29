@@ -66,6 +66,8 @@ VITE_API_BASE_URL=http://localhost:3003
 
 Leave this unset when using the local Vite proxy.
 
+For separate Vercel projects, set `VITE_API_BASE_URL` in the frontend project's Production (and Preview, if needed) environment variables to the backend's origin, for example `https://your-backend.vercel.app` (no trailing slash). Set `FRONTEND_ORIGIN` in the backend project to the frontend's origin, for example `https://your-frontend.vercel.app`. Redeploy the frontend after changing its environment variables so Vite includes the new URL in the build.
+
 ## Running locally
 
 ```bash

@@ -8,7 +8,7 @@ import {
 } from '@purplecallio/react';
 import './App.css';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -103,7 +103,7 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
           <CameraButton labelOn="Turn camera off" labelOff="Turn camera on" />
         ) : null}
         <button type="button" className="danger-button" onClick={handleHangUp}>
-          Hang Up-
+          Hang Up
         </button>
       </div>
     </div>
