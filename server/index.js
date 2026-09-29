@@ -108,8 +108,7 @@ app.post("/api/presence", (req, res) => {
    const email = readEmail(req.body?.email);
    if (!isValidEmail(email))
       return res.status(400).json(errorPayload("INVALID_EMAIL", "Please provide a valid email address."));
-   const user = users.get(email);
-   if (user) user.lastSeen = Date.now();
+   users.set(email, { email, lastSeen: Date.now() });
    return res.json({ success: true });
 });
 
