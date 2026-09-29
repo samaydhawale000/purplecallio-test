@@ -127,15 +127,19 @@ function App() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const observedCallStates = useRef(new Map());
+  const userRefreshId = useRef(0);
 
   const refreshUsers = useCallback(async () => {
     if (!currentUser) {
       return;
     }
 
+    const refreshId = ++userRefreshId.current;
     try {
       const data = await apiRequest('/api/users');
-      setUsers(data.filter((user) => user.email !== currentUser.email));
+      if (refreshId === userRefreshId.current) {
+        setUsers(data.filter((user) => user.email !== currentUser.email));
+      }
     } catch (refreshError) {
       console.error(refreshError);
     }
@@ -199,16 +203,15 @@ function App() {
 
   useEffect(() => {
     if (!currentUser) return undefined;
-    const releasePresence = () => {
-      fetch(`${API_BASE_URL}/api/logout`, {
+    const heartbeat = () => {
+      apiRequest('/api/presence', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: currentUser.email }),
-        keepalive: true,
-      }).catch(() => {});
+      }).catch((presenceError) => console.error(presenceError));
     };
-    window.addEventListener('pagehide', releasePresence);
-    return () => window.removeEventListener('pagehide', releasePresence);
+    heartbeat();
+    const presenceInterval = setInterval(heartbeat, 10_000);
+    return () => clearInterval(presenceInterval);
   }, [currentUser]);
 
   const handleLogin = async (event) => {

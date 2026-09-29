@@ -9,6 +9,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 3003);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3002";
 const users = new Map();
+const PRESENCE_TTL_MS = 30_000;
 const activeCalls = new Map();
 const CALL_TIMEOUT_MS = 30_000;
 const TERMINAL_CALL_TTL_MS = 60_000;
@@ -65,12 +66,20 @@ function finishCall(call, status) {
    }, TERMINAL_CALL_TTL_MS).unref?.();
 }
 
+function pruneExpiredUsers() {
+   const cutoff = Date.now() - PRESENCE_TTL_MS;
+   for (const [email, user] of users) {
+      if (user.lastSeen < cutoff) users.delete(email);
+   }
+}
+
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
 app.post("/api/login", (req, res) => {
+   pruneExpiredUsers();
    const email = readEmail(req.body?.email);
    if (!isValidEmail(email))
       return res
@@ -90,9 +99,18 @@ app.post("/api/login", (req, res) => {
                "This email is already logged in.",
             ),
          );
-   users.set(email, { email });
+   users.set(email, { email, lastSeen: Date.now() });
    console.log(`User logged in: ${email}`);
    return res.json({ success: true, user: { email } });
+});
+
+app.post("/api/presence", (req, res) => {
+   const email = readEmail(req.body?.email);
+   if (!isValidEmail(email))
+      return res.status(400).json(errorPayload("INVALID_EMAIL", "Please provide a valid email address."));
+   const user = users.get(email);
+   if (user) user.lastSeen = Date.now();
+   return res.json({ success: true });
 });
 
 app.post("/api/logout", (req, res) => {
@@ -130,6 +148,7 @@ app.post("/api/logout", (req, res) => {
 });
 
 app.get("/api/users", (_req, res) => {
+   pruneExpiredUsers();
    res.json(Array.from(users.keys(), (email) => ({ email, online: true })));
 });
 
