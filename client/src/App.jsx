@@ -103,7 +103,7 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
           <CameraButton labelOn="Turn camera off" labelOff="Turn camera on" />
         ) : null}
         <button type="button" className="danger-button" onClick={handleHangUp}>
-          Hang Up
+          Hang Up-
         </button>
       </div>
     </div>
