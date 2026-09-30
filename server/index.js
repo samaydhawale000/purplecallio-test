@@ -26,6 +26,35 @@ const signalUrl = () =>
    process.env.PURPLECALLIO_BASE_URL ||
    "https://api.purplecallio.com";
 
+function purpleCallioConnectionError(error) {
+   const code = error?.cause?.code || error?.code;
+   const host = (() => {
+      try {
+         return new URL(
+            process.env.PURPLECALLIO_BASE_URL || "https://api.purplecallio.com",
+         ).host;
+      } catch {
+         return "the configured PurpleCallio API";
+      }
+   })();
+   const causes = {
+      ENOTFOUND: "The API hostname could not be found. Check PURPLECALLIO_BASE_URL.",
+      EAI_AGAIN: "DNS lookup temporarily failed. Check your network and try again.",
+      ECONNREFUSED: "The API host refused the connection. Check the API URL and that the service is available.",
+      ETIMEDOUT: "The connection timed out. Check your network and try again.",
+      ECONNRESET: "The connection was interrupted. Check your network and try again.",
+      ERR_INVALID_URL: "PURPLECALLIO_BASE_URL is not a valid URL.",
+   };
+
+   if (code && causes[code]) {
+      return `Could not reach PurpleCallio at ${host}. ${causes[code]} (network code: ${code})`;
+   }
+   if (error?.message === "fetch failed") {
+      return `Could not reach PurpleCallio at ${host}. Check PURPLECALLIO_BASE_URL, DNS, and the server's outbound internet connection.`;
+   }
+   return error?.message || "Could not create the PurpleCallio call.";
+}
+
 function purpleClient() {
    if (!process.env.PURPLECALLIO_API_KEY) return null;
    return new PurpleCallioClient({
@@ -262,13 +291,18 @@ app.post("/api/calls", async (req, res) => {
       }, CALL_TIMEOUT_MS).unref?.();
       return res.json({ success: true, call: publicCall(call, caller) });
    } catch (error) {
-      console.error("PurpleCallio createCall error:", error.message);
+      const code = error?.cause?.code || error?.code || "unknown";
+      console.error("PurpleCallio createCall error:", {
+         message: error?.message,
+         code,
+         cause: error?.cause?.message,
+      });
       return res
          .status(502)
          .json(
             errorPayload(
                "PURPLECALLIO_ERROR",
-               error.message || "Could not create the PurpleCallio call.",
+               purpleCallioConnectionError(error),
             ),
          );
    }
