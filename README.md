@@ -58,6 +58,8 @@ PURPLECALLIO_SIGNAL_URL=https://api.purplecallio.com
 
 A template file is included at `server/.env.example`.
 
+For custom deployments, `PURPLECALLIO_BASE_URL` is the REST API base (it may end in `/api`), while `PURPLECALLIO_SIGNAL_URL` is the Socket.IO server origin (do not append `/api`).
+
 To point the client at a backend hosted outside the Vite development proxy, create `client/.env` and set:
 
 ```env

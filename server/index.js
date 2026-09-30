@@ -21,10 +21,21 @@ const errorPayload = (code, message) => ({
    success: false,
    error: { code, message },
 });
-const signalUrl = () =>
-   process.env.PURPLECALLIO_SIGNAL_URL ||
-   process.env.PURPLECALLIO_BASE_URL ||
-   "https://api.purplecallio.com";
+const signalUrl = () => {
+   const configuredUrl =
+      process.env.PURPLECALLIO_SIGNAL_URL ||
+      process.env.PURPLECALLIO_BASE_URL ||
+      "https://api.purplecallio.com";
+   try {
+      const url = new URL(configuredUrl);
+      url.pathname = url.pathname.replace(/\/api\/?$/, "") || "/";
+      url.search = "";
+      url.hash = "";
+      return url.toString().replace(/\/$/, "");
+   } catch {
+      return configuredUrl;
+   }
+};
 
 function purpleCallioConnectionError(error) {
    const code = error?.cause?.code || error?.code;
