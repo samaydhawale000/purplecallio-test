@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --watch index.js --ignore node_modules index.js",
+    "build": "echo \"No build step needed for server\"",
     "start": "node index.js"
   },
   "keywords": [],
