@@ -22,6 +22,6 @@
     "vite": "^8.3.0"
   },
   "overrides": {
-    "@purplecallio/sdk": "^0.2.0"
+    "@purplecallio/sdk": "^0.2.1"
   }
 }
