@@ -75,6 +75,27 @@ function purpleClient() {
    });
 }
 
+// The browser SDK looks for TURN credentials at `${signalUrl}/turn/credentials`,
+// but they live under the REST base (`.../api/turn/credentials`). Without TURN
+// the SDK falls back to a public STUN server only, so peers on different
+// networks connect to signaling but never exchange audio/video.
+async function fetchIceServers(token) {
+   const baseUrl = (
+      process.env.PURPLECALLIO_BASE_URL || "https://api.purplecallio.com"
+   ).replace(/\/+$/, "");
+   try {
+      const response = await fetch(`${baseUrl}/turn/credentials`, {
+         headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const data = await response.json();
+      return Array.isArray(data?.iceServers) ? data.iceServers : [];
+   } catch (error) {
+      console.error("PurpleCallio TURN credentials error:", error.message);
+      return [];
+   }
+}
+
 function publicCall(call, email) {
    return {
       id: call.id,
@@ -84,6 +105,7 @@ function publicCall(call, email) {
       type: call.type,
       status: call.status,
       signalUrl: call.signalUrl,
+      iceServers: call.iceServers[email] || [],
       participantToken: call.tokens[email] || "",
       createdAt: call.createdAt,
       acceptedAt: call.acceptedAt,
@@ -272,6 +294,10 @@ app.post("/api/calls", async (req, res) => {
             "PurpleCallio did not return a call ID and both participant tokens.",
          );
       }
+      const [callerIceServers, receiverIceServers] = await Promise.all([
+         fetchIceServers(tokens[caller]),
+         fetchIceServers(tokens[receiver]),
+      ]);
       const call = {
          id: result.callId,
          caller,
@@ -280,6 +306,10 @@ app.post("/api/calls", async (req, res) => {
          status: "ringing",
          signalUrl: signalUrl(),
          tokens,
+         iceServers: {
+            [caller]: callerIceServers,
+            [receiver]: receiverIceServers,
+         },
          createdAt: Date.now(),
          acceptedAt: null,
       };

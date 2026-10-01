@@ -113,6 +113,7 @@ function CallRoom({ call, currentUser, onHangUp }) {
       token={call.participantToken}
       callId={call.id}
       signalUrl={call.signalUrl}
+      iceServers={call.iceServers}
       video={call.type === 'video'}
       audio
     >
