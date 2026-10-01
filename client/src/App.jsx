@@ -164,7 +164,7 @@ function RemoteAudio({ stream }) {
 }
 
 function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
-  const { engine, join, leave, connectionState, localStream, remoteStream } = useMeeting();
+  const { join, leave, connectionState, localStream, remoteStream } = useMeeting();
   const isVideo = call.type === 'video';
   const remoteUser = call.caller === currentUser.email ? call.receiver : call.caller;
 

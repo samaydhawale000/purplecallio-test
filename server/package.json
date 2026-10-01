@@ -13,7 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@purplecallio/sdk": "^0.1.0",
+    "@purplecallio/sdk": "^0.2.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.4",
     "express": "^5.2.1"

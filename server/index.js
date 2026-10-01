@@ -70,7 +70,7 @@ function purpleClient() {
    if (!process.env.PURPLECALLIO_API_KEY) return null;
    return new PurpleCallioClient({
       apiKey: process.env.PURPLECALLIO_API_KEY,
-      baseUrl:
+      apiUrl:
          process.env.PURPLECALLIO_BASE_URL || "https://api.purplecallio.com",
    });
 }
