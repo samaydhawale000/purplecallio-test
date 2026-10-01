@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "@purplecallio/sdk": "^0.1.0"
   }
 }
