@@ -175,7 +175,8 @@ app.post("/api/presence", (req, res) => {
 });
 
 app.post("/api/logout", (req, res) => {
-   const email = readEmail(req.body?.email);
+   // The client's pagehide beacon sends the email in the query string.
+   const email = readEmail(req.body?.email || req.query.email);
    if (!isValidEmail(email))
       return res
          .status(400)

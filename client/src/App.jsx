@@ -163,11 +163,40 @@ function RemoteAudio({ stream }) {
   );
 }
 
+// Workarounds for @purplecallio/sdk 0.1.x against the current signaling server:
+// - the server answers `authenticate` with `connected` but never sends the
+//   `authenticate-result` that engine.join() waits for, so the SDK never emits
+//   `join-call` and neither side enters the call room;
+// - the server never emits `call.started`, the SDK's only trigger for creating
+//   the WebRTC offer, so no media would flow even after joining.
+// We join the room on `connected`, and the caller sends the offer once both
+// participants are in.
+function useSignalingWorkarounds(engine, callId) {
+  useEffect(() => {
+    if (!engine) return undefined;
+    let role = null;
+    const offs = [
+      engine.on('connected', (payload) => {
+        role = payload?.role;
+        if (engine.connectionState() !== 'joined') engine.transport?.emit('join-call', { callId });
+      }),
+      engine.on('participant.joined', (payload) => {
+        const pc = engine.pc;
+        if (role !== 'CALLER' || (payload?.participants ?? 0) < 2 || !pc) return;
+        if (pc.signalingState !== 'stable' || pc.remoteDescription) return;
+        engine.createOffer().catch((error) => console.error('[PurpleCallio] could not create offer:', error));
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [engine, callId]);
+}
+
 function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
-  const { join, leave, connectionState, localStream, remoteStream } = useMeeting();
+  const { engine, join, leave, connectionState, localStream, remoteStream } = useMeeting();
   const isVideo = call.type === 'video';
   const remoteUser = call.caller === currentUser.email ? call.receiver : call.caller;
 
+  useSignalingWorkarounds(engine, call.id);
   useStreamTracks(remoteStream);
   useStreamTracks(localStream);
   const remoteVideoOn = hasLiveVideo(remoteStream);
@@ -348,9 +377,23 @@ function App() {
         body: JSON.stringify({ email: currentUser.email }),
       }).catch((presenceError) => console.error(presenceError));
     };
+    // Closing or refreshing the tab marks the user offline right away instead of
+    // after the server's presence TTL; a refresh or back-forward restore comes
+    // back online on the next heartbeat.
+    const goOffline = () =>
+      navigator.sendBeacon?.(`${API_BASE_URL}/api/logout?email=${encodeURIComponent(currentUser.email)}`);
+    const onPageShow = (event) => {
+      if (event.persisted) heartbeat();
+    };
     heartbeat();
     const presenceInterval = setInterval(heartbeat, 10_000);
-    return () => clearInterval(presenceInterval);
+    window.addEventListener('pagehide', goOffline);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      clearInterval(presenceInterval);
+      window.removeEventListener('pagehide', goOffline);
+      window.removeEventListener('pageshow', onPageShow);
+    };
   }, [currentUser]);
 
   useEffect(() => {
