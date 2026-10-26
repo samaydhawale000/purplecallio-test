@@ -15,6 +15,8 @@ This app demonstrates:
 - PurpleCallio `MeetingProvider` integration on the client
 - microphone and camera toggling via the official React SDK
 - call timeout and cleanup
+- **Live Translate** during calls (translated voice + DualView captions)
+- **AI voice agent** calls from the browser
 
 ## Architecture
 
@@ -54,6 +56,7 @@ FRONTEND_ORIGIN=http://localhost:3002
 PURPLECALLIO_API_KEY=your_api_key_here
 PURPLECALLIO_BASE_URL=https://api.purplecallio.com
 PURPLECALLIO_SIGNAL_URL=https://api.purplecallio.com
+PURPLECALLIO_AGENT_ID=your_agent_id_here
 ```
 
 A template file is included at `server/.env.example`.
@@ -116,6 +119,16 @@ The flow follows the current SDK docs:
 - use `CameraButton` and `MicrophoneButton` from the React SDK
 
 The SDK's create-call response supplies `callId`, `callerToken`, and `receiverToken`. The signaling URL defaults to `PURPLECALLIO_SIGNAL_URL`, then `PURPLECALLIO_BASE_URL`, and finally `https://api.purplecallio.com`.
+
+## Live translation
+
+Once a call is connected, the **Live translation** panel under the call controls lets each participant pick the language they speak and the language they want to hear, then click **Translate**. The panel uses `meeting.translation` from `@purplecallio/sdk`, which reuses the call's session token and microphone. While the translated voice plays, the other person's original audio is turned down. Captions show each phrase's original words next to its translation. Each participant turns translation on separately. Your PurpleCallio plan must include Live Translate.
+
+The language list comes from `GET /api/translation/languages`, which the backend proxies to PurpleCallio.
+
+## AI voice agent
+
+Create an agent in the PurpleCallio dashboard and set `PURPLECALLIO_AGENT_ID` in `server/.env`. An **AI Agent** card then appears above the user list. **Call AI agent** asks the backend (`POST /api/ai/sessions`) for a single-use `bj_ai_` session token through `client.ai.createSession()`. The browser then connects with `usePurpleCallioAI`. The card shows a live transcript, mute and end controls, and prompts for any tool calls that need approval. The backend ends a user's previous session when they start a new one or log out. AI voice agents require a paid plan.
 
 ## Known POC limitations
 

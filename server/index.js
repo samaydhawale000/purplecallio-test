@@ -13,6 +13,8 @@ const PRESENCE_TTL_MS = 30_000;
 const activeCalls = new Map();
 const CALL_TIMEOUT_MS = 30_000;
 const TERMINAL_CALL_TTL_MS = 60_000;
+// email -> sessionId of the user's latest AI agent session
+const aiSessions = new Map();
 
 const readEmail = (value) =>
    typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -94,6 +96,17 @@ async function fetchIceServers(token) {
       console.error("PurpleCallio TURN credentials error:", error.message);
       return [];
    }
+}
+
+function endAiSession(email) {
+   const sessionId = aiSessions.get(email);
+   if (!sessionId) return;
+   aiSessions.delete(email);
+   purpleClient()
+      ?.ai.endSession(sessionId)
+      .catch((error) =>
+         console.error("PurpleCallio AI session cleanup error:", error.message),
+      );
 }
 
 function publicCall(call, email) {
@@ -187,6 +200,7 @@ app.post("/api/logout", (req, res) => {
             ),
          );
    users.delete(email);
+   endAiSession(email);
    for (const call of activeCalls.values()) {
       if (
          [call.caller, call.receiver].includes(email) &&
@@ -207,6 +221,79 @@ app.post("/api/logout", (req, res) => {
    }
    console.log(`User logged out: ${email}`);
    return res.json({ success: true });
+});
+
+app.get("/api/config", (_req, res) =>
+   res.json({
+      success: true,
+      signalUrl: signalUrl(),
+      aiAgentEnabled: Boolean(
+         process.env.PURPLECALLIO_API_KEY && process.env.PURPLECALLIO_AGENT_ID,
+      ),
+   }),
+);
+
+// Proxied so the browser's LanguagePicker does not depend on CORS at the
+// PurpleCallio REST host.
+app.get("/api/translation/languages", async (_req, res) => {
+   const baseUrl = (
+      process.env.PURPLECALLIO_BASE_URL || "https://api.purplecallio.com"
+   ).replace(/\/+$/, "");
+   try {
+      const response = await fetch(`${baseUrl}/translation/languages`);
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      return res.json(await response.json());
+   } catch (error) {
+      console.error("PurpleCallio translation languages error:", error.message);
+      return res
+         .status(502)
+         .json(
+            errorPayload(
+               "PURPLECALLIO_ERROR",
+               "Could not load translation languages.",
+            ),
+         );
+   }
+});
+
+app.post("/api/ai/sessions", async (req, res) => {
+   const email = readEmail(req.body?.email);
+   if (!users.has(email))
+      return res
+         .status(404)
+         .json(errorPayload("USER_NOT_FOUND", "Log in before calling the AI agent."));
+   const client = purpleClient();
+   if (!client || !process.env.PURPLECALLIO_AGENT_ID)
+      return res
+         .status(500)
+         .json(
+            errorPayload(
+               "PURPLECALLIO_ERROR",
+               "Set PURPLECALLIO_API_KEY and PURPLECALLIO_AGENT_ID in server/.env to call the AI agent.",
+            ),
+         );
+   // Tokens are single-use, so every start() asks for a new session.
+   endAiSession(email);
+   try {
+      const session = await client.ai.createSession({
+         agentId: process.env.PURPLECALLIO_AGENT_ID,
+         participant: { id: email, name: email.split("@")[0] },
+      });
+      aiSessions.set(email, session.sessionId);
+      console.log(`AI session created: ${email}, sessionId=${session.sessionId}`);
+      return res.json({
+         success: true,
+         token: session.token,
+         sessionId: session.sessionId,
+      });
+   } catch (error) {
+      console.error("PurpleCallio createSession error:", error.message);
+      return res
+         .status(502)
+         .json(
+            errorPayload("PURPLECALLIO_ERROR", purpleCallioConnectionError(error)),
+         );
+   }
 });
 
 app.get("/api/users", (_req, res) => {

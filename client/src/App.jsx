@@ -3,11 +3,18 @@ import {
   Avatar,
   CameraButton,
   ConnectionStatus,
+  DualViewCaptions,
+  LanguagePicker,
   LeaveButton,
   MeetingProvider,
   MicrophoneButton,
   ParticipantTile,
+  TranslationControls,
+  aiErrorMessage,
+  translationErrorMessage,
   useMeeting,
+  usePurpleCallioAI,
+  useTranslation,
 } from '@purplecallio/react';
 import './App.css';
 
@@ -127,10 +134,17 @@ function CallRoom({ call, currentUser, onHangUp }) {
 // which it renders only when there is video — so audio-only calls would be
 // silent. Tiles stay muted and all remote audio goes through this element.
 function RemoteAudio({ stream }) {
+  const { engine } = useMeeting();
   const audioRef = useRef(null);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
   useStreamTracks(stream);
   const audioTrackCount = stream?.getAudioTracks().length ?? 0;
+
+  // Live Translate ducks registered elements while the translated voice plays.
+  useEffect(() => {
+    if (!engine || !audioRef.current) return undefined;
+    return engine.registerAudioElement(audioRef.current);
+  }, [engine]);
 
   useEffect(() => {
     const element = audioRef.current;
@@ -160,6 +174,187 @@ function RemoteAudio({ stream }) {
         </button>
       ) : null}
     </>
+  );
+}
+
+// LanguagePicker fetches `${apiUrl}/translation/languages`, which the backend proxies.
+const TRANSLATION_API_URL = `${API_BASE_URL}/api`;
+
+function TranslationPanel({ peerName }) {
+  const { engine, connectionState } = useMeeting();
+  // meeting.translation reuses this call's token, microphone and remote audio.
+  const translation = useTranslation({ client: engine?.translation ?? null });
+  const [speak, setSpeak] = useState('en');
+  const [hear, setHear] = useState('hi');
+  const { enabled, state, error, repeatRequests } = translation;
+
+  const changeLanguages = (languages) => {
+    if (languages.speak) setSpeak(languages.speak);
+    if (languages.hear) setHear(languages.hear);
+    if (enabled) translation.setLanguages(languages);
+  };
+
+  return (
+    <section className="translate-panel" aria-label="Live translation">
+      <div className="translate-header">
+        <div>
+          <h4>🌐 Live translation</h4>
+          <p>
+            {state.status === 'ready'
+              ? state.peer?.connected
+                ? `${displayName(peerName)} is translating too`
+                : `Waiting for ${displayName(peerName)} to turn on translation…`
+              : 'Hear the other person in your language, with live captions.'}
+          </p>
+        </div>
+        {enabled ? (
+          <button type="button" className="translate-toggle is-on" onClick={translation.disable}>
+            Turn off
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="translate-toggle"
+            disabled={!engine || connectionState !== 'connected'}
+            onClick={() => translation.enable({ speak, hear, mode: 'voice' })}
+          >
+            Translate
+          </button>
+        )}
+      </div>
+
+      <div className="translate-languages">
+        <LanguagePicker
+          label="I speak"
+          value={speak}
+          onChange={(code) => changeLanguages({ speak: code })}
+          apiUrl={TRANSLATION_API_URL}
+          allowAuto
+        />
+        <LanguagePicker
+          label="I want to hear"
+          value={hear}
+          onChange={(code) => changeLanguages({ hear: code })}
+          apiUrl={TRANSLATION_API_URL}
+          require={state.mode === 'captions' ? 'captions' : 'voice'}
+        />
+      </div>
+
+      {error ? <p className="error-message">{translationErrorMessage(error.code)}</p> : null}
+
+      {enabled ? <TranslationControls translation={translation} /> : null}
+
+      {repeatRequests.map((request) => (
+        <div className="translate-repeat" key={request.phraseId}>
+          <span>{request.prompt} “{request.original}”</span>
+          <button type="button" onClick={() => translation.dismissRepeatRequest(request.phraseId)}>
+            OK
+          </button>
+        </div>
+      ))}
+
+      {translation.phrases.length > 0 ? (
+        <DualViewCaptions
+          className="translate-captions"
+          translation={translation}
+          youLabel="You"
+          peerLabel={displayName(peerName)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+const AGENT_STATE_LABELS = {
+  listening: 'Listening…',
+  thinking: 'Thinking…',
+  speaking: 'Speaking…',
+};
+
+function AiAgentCard({ currentUser, signalUrl }) {
+  const ai = usePurpleCallioAI({
+    apiUrl: signalUrl,
+    getToken: () =>
+      apiRequest('/api/ai/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ email: currentUser.email }),
+      }),
+  });
+  const transcriptRef = useRef(null);
+  const inCall = ['starting', 'connecting', 'connected'].includes(ai.status);
+  const mm = String(Math.floor(ai.durationSeconds / 60)).padStart(2, '0');
+  const ss = String(ai.durationSeconds % 60).padStart(2, '0');
+
+  useEffect(() => {
+    const element = transcriptRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [ai.transcript]);
+
+  let statusLabel = 'Talk to the AI voice agent from your browser.';
+  if (ai.status === 'starting' || ai.status === 'connecting') statusLabel = 'Connecting…';
+  if (ai.status === 'connected') statusLabel = `${AGENT_STATE_LABELS[ai.agentState]} · ${mm}:${ss}`;
+  if (ai.status === 'ended' && ai.endedReason && !ai.error) statusLabel = `Call ended (${ai.endedReason}).`;
+
+  return (
+    <div className="card ai-card">
+      <div className="ai-card-header">
+        <div className={`ai-orb is-${ai.status === 'connected' ? ai.agentState : 'idle'}`} aria-hidden="true">
+          🤖
+        </div>
+        <div className="ai-card-title">
+          <h3>AI Agent</h3>
+          <p className="muted">{statusLabel}</p>
+        </div>
+        <div className="button-group">
+          {inCall ? (
+            <>
+              <button
+                type="button"
+                className="icon-button"
+                disabled={ai.status !== 'connected'}
+                onClick={ai.isMuted ? ai.unmute : ai.mute}
+              >
+                {ai.isMuted ? '🎙️ Unmute' : '🔇 Mute'}
+              </button>
+              <button type="button" className="icon-button danger-button" onClick={ai.end}>
+                End
+              </button>
+            </>
+          ) : (
+            <button type="button" className="icon-button primary" onClick={ai.start}>
+              📞 Call AI agent
+            </button>
+          )}
+        </div>
+      </div>
+
+      {ai.error ? <p className="error-message">{aiErrorMessage(ai.error.code) || ai.error.message}</p> : null}
+
+      {ai.pendingConfirmations.map((tool) => (
+        <div className="ai-confirm" key={tool.id}>
+          <span>The agent wants to run <strong>{tool.name}</strong>.</span>
+          <div className="button-group">
+            <button type="button" className="icon-button" onClick={() => ai.confirmTool(tool.id, false)}>
+              Decline
+            </button>
+            <button type="button" className="icon-button primary" onClick={() => ai.confirmTool(tool.id, true)}>
+              Allow
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {ai.transcript.length > 0 ? (
+        <ul className="ai-transcript" ref={transcriptRef}>
+          {ai.transcript.map((line) => (
+            <li key={line.key} className={`ai-line is-${line.role} ${line.final ? '' : 'is-partial'}`}>
+              <span className="ai-line-role">{line.role === 'agent' ? 'Agent' : 'You'}</span>
+              {line.text}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -245,6 +440,8 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
         {isVideo ? <CameraButton /> : null}
         <LeaveButton label="Hang up" onLeave={onHangUp} />
       </div>
+
+      <TranslationPanel peerName={remoteUser} />
     </div>
   );
 }
@@ -265,6 +462,7 @@ function App() {
   const [activeCall, setActiveCall] = useState(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
+  const [config, setConfig] = useState(null);
   const observedCallStates = useRef(new Map());
   const userRefreshId = useRef(0);
 
@@ -365,6 +563,13 @@ function App() {
       window.removeEventListener('pagehide', goOffline);
       window.removeEventListener('pageshow', onPageShow);
     };
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    apiRequest('/api/config')
+      .then(setConfig)
+      .catch((configError) => console.error(configError));
   }, [currentUser]);
 
   useEffect(() => {
@@ -583,49 +788,54 @@ function App() {
       {activeCall ? (
         <CallRoom call={activeCall} currentUser={currentUser} onHangUp={handleHangUp} />
       ) : (
-        <div className="card user-card">
-          <div className="user-card-header">
-            <h3>Online users</h3>
-            <span className="count-pill">{users.length}</span>
-          </div>
-          {users.length === 0 ? (
-            <p className="empty-state">No one else is online yet. Open this app in another browser profile and sign in with a different email.</p>
-          ) : (
-            <ul className="user-list">
-              {users.map((user) => (
-                <li className="user-row" key={user.email}>
-                  <div className="user-info">
-                    <span className="presence-avatar">
-                      <Avatar id={user.email} size={40} />
-                    </span>
-                    <div>
-                      <strong>{displayName(user.email)}</strong>
-                      <small>{user.email}</small>
+        <>
+          {config?.aiAgentEnabled ? (
+            <AiAgentCard currentUser={currentUser} signalUrl={config.signalUrl} />
+          ) : null}
+          <div className="card user-card">
+            <div className="user-card-header">
+              <h3>Online users</h3>
+              <span className="count-pill">{users.length}</span>
+            </div>
+            {users.length === 0 ? (
+              <p className="empty-state">No one else is online yet. Open this app in another browser profile and sign in with a different email.</p>
+            ) : (
+              <ul className="user-list">
+                {users.map((user) => (
+                  <li className="user-row" key={user.email}>
+                    <div className="user-info">
+                      <span className="presence-avatar">
+                        <Avatar id={user.email} size={40} />
+                      </span>
+                      <div>
+                        <strong>{displayName(user.email)}</strong>
+                        <small>{user.email}</small>
+                      </div>
                     </div>
-                  </div>
-                  <div className="button-group">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      disabled={Boolean(pendingCall)}
-                      onClick={() => startCall(user, 'audio')}
-                    >
-                      📞 Audio
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button primary"
-                      disabled={Boolean(pendingCall)}
-                      onClick={() => startCall(user, 'video')}
-                    >
-                      🎥 Video
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+                    <div className="button-group">
+                      <button
+                        type="button"
+                        className="icon-button"
+                        disabled={Boolean(pendingCall)}
+                        onClick={() => startCall(user, 'audio')}
+                      >
+                        📞 Audio
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button primary"
+                        disabled={Boolean(pendingCall)}
+                        onClick={() => startCall(user, 'video')}
+                      >
+                        🎥 Video
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
