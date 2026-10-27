@@ -3,6 +3,7 @@ import {
   Avatar,
   CameraButton,
   ConnectionStatus,
+  ControlButton,
   DualViewCaptions,
   LanguagePicker,
   LeaveButton,
@@ -180,17 +181,50 @@ function RemoteAudio({ stream }) {
 // LanguagePicker fetches `${apiUrl}/translation/languages`, which the backend proxies.
 const TRANSLATION_API_URL = `${API_BASE_URL}/api`;
 
-function TranslationPanel({ peerName }) {
+// The SDK reports "joined" once the call room is entered; "connected" only
+// covers the brief signaling handshake before that (and reconnects).
+const CALL_READY_STATES = new Set(['connected', 'joined']);
+
+function TranslateIcon({ active }) {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? '#c4b5fd' : '#94A3B8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 8l6 6" />
+      <path d="M4 14l6-6 2-3" />
+      <path d="M2 5h12" />
+      <path d="M7 2h1" />
+      <path d="M22 22l-5-10-5 10" />
+      <path d="M14 18h6" />
+    </svg>
+  );
+}
+
+function TranslateButton({ translation, speak, hear }) {
   const { engine, connectionState } = useMeeting();
-  // meeting.translation reuses this call's token, microphone and remote audio.
-  const translation = useTranslation({ client: engine?.translation ?? null });
-  const [speak, setSpeak] = useState('en');
-  const [hear, setHear] = useState('hi');
+  const { enabled, state } = translation;
+  const starting = state.status === 'connecting';
+  const callReady = Boolean(engine) && CALL_READY_STATES.has(connectionState);
+
+  return (
+    <ControlButton
+      label={starting ? 'Starting…' : enabled ? 'Stop translate' : 'Translate'}
+      title={callReady ? undefined : 'Available once the call is connected'}
+      active={enabled}
+      activeColor="#4c1d95"
+      size={56}
+      disabled={!enabled && !callReady}
+      onClick={enabled ? translation.disable : () => translation.enable({ speak, hear, mode: 'voice' })}
+    >
+      <TranslateIcon active={enabled} />
+    </ControlButton>
+  );
+}
+
+function TranslationPanel({ peerName, translation, speak, hear, onSpeakChange, onHearChange }) {
   const { enabled, state, error, repeatRequests } = translation;
 
   const changeLanguages = (languages) => {
-    if (languages.speak) setSpeak(languages.speak);
-    if (languages.hear) setHear(languages.hear);
+    if (languages.speak) onSpeakChange(languages.speak);
+    if (languages.hear) onHearChange(languages.hear);
     if (enabled) translation.setLanguages(languages);
   };
 
@@ -204,23 +238,9 @@ function TranslationPanel({ peerName }) {
               ? state.peer?.connected
                 ? `${displayName(peerName)} is translating too`
                 : `Waiting for ${displayName(peerName)} to turn on translation…`
-              : 'Hear the other person in your language, with live captions.'}
+              : 'Pick your languages, then press Translate in the call controls.'}
           </p>
         </div>
-        {enabled ? (
-          <button type="button" className="translate-toggle is-on" onClick={translation.disable}>
-            Turn off
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="translate-toggle"
-            disabled={!engine || connectionState !== 'connected'}
-            onClick={() => translation.enable({ speak, hear, mode: 'voice' })}
-          >
-            Translate
-          </button>
-        )}
       </div>
 
       <div className="translate-languages">
@@ -359,7 +379,11 @@ function AiAgentCard({ currentUser, signalUrl }) {
 }
 
 function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
-  const { join, leave, connectionState, localStream, remoteStream } = useMeeting();
+  const { engine, join, leave, connectionState, localStream, remoteStream } = useMeeting();
+  // meeting.translation reuses this call's token, microphone and remote audio.
+  const translation = useTranslation({ client: engine?.translation ?? null });
+  const [speak, setSpeak] = useState('en');
+  const [hear, setHear] = useState('hi');
   const isVideo = call.type === 'video';
   const remoteUser = call.caller === currentUser.email ? call.receiver : call.caller;
 
@@ -384,7 +408,7 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
     );
   }, [remoteStream]);
 
-  const waitingLabel = connectionState === 'connected'
+  const waitingLabel = CALL_READY_STATES.has(connectionState)
     ? `Waiting for ${displayName(remoteUser)} to join…`
     : 'Connecting…';
 
@@ -438,10 +462,18 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
       <div className="call-controls">
         <MicrophoneButton />
         {isVideo ? <CameraButton /> : null}
+        <TranslateButton translation={translation} speak={speak} hear={hear} />
         <LeaveButton label="Hang up" onLeave={onHangUp} />
       </div>
 
-      <TranslationPanel peerName={remoteUser} />
+      <TranslationPanel
+        peerName={remoteUser}
+        translation={translation}
+        speak={speak}
+        hear={hear}
+        onSpeakChange={setSpeak}
+        onHearChange={setHear}
+      />
     </div>
   );
 }

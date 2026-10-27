@@ -590,21 +590,6 @@ input:focus-visible {
   font-size: 0.85rem;
 }
 
-.translate-toggle {
-  flex-shrink: 0;
-  padding: 10px 18px;
-  border: none;
-  border-radius: 999px;
-  background: linear-gradient(135deg, var(--brand), var(--brand-2));
-  color: #fff;
-  font-weight: 700;
-}
-
-.translate-toggle.is-on {
-  background: rgba(255, 255, 255, 0.1);
-  color: #e2e8f0;
-}
-
 .translate-languages {
   display: grid;
   grid-template-columns: 1fr 1fr;
