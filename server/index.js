@@ -122,6 +122,7 @@ function publicCall(call, email) {
       participantToken: call.tokens[email] || "",
       createdAt: call.createdAt,
       acceptedAt: call.acceptedAt,
+      translation: call.translation,
    };
 }
 
@@ -400,6 +401,12 @@ app.post("/api/calls", async (req, res) => {
          },
          createdAt: Date.now(),
          acceptedAt: null,
+         translation: {
+            enabled: false,
+            startedBy: null,
+            version: 0,
+            languages: {},
+         },
       };
       activeCalls.set(call.id, call);
       console.log(
@@ -518,6 +525,44 @@ app.post("/api/calls/:callId/reject", async (req, res) => {
             ),
          );
    }
+});
+
+// Live Translate is a call-wide switch: each browser only translates its own
+// microphone, so both sides must run it. Either side turning it on (or off)
+// flips it for both; clients pick the change up from the /api/calls poll.
+app.post("/api/calls/:callId/translation", (req, res) => {
+   const email = readEmail(req.body?.userEmail || req.body?.email);
+   const call = activeCalls.get(req.params.callId);
+   if (!call || call.status !== "accepted")
+      return res
+         .status(404)
+         .json(
+            errorPayload("CALL_NOT_FOUND", "This call is no longer active."),
+         );
+   if (![call.caller, call.receiver].includes(email))
+      return res
+         .status(403)
+         .json(
+            errorPayload(
+               "INVALID_CALL_PARTICIPANT",
+               "You are not part of this call.",
+            ),
+         );
+   const { enabled, speak, hear } = req.body || {};
+   const translation = call.translation;
+   if (typeof speak === "string" || typeof hear === "string") {
+      const current = translation.languages[email] || {};
+      translation.languages[email] = {
+         speak: typeof speak === "string" ? speak : current.speak,
+         hear: typeof hear === "string" ? hear : current.hear,
+      };
+   }
+   if (typeof enabled === "boolean" && enabled !== translation.enabled) {
+      translation.enabled = enabled;
+      translation.startedBy = enabled ? email : null;
+   }
+   translation.version += 1;
+   return res.json({ success: true, call: publicCall(call, email) });
 });
 
 app.post("/api/calls/:callId/end", async (req, res) => {

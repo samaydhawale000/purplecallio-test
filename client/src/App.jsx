@@ -10,12 +10,13 @@ import {
   MeetingProvider,
   MicrophoneButton,
   ParticipantTile,
-  TranslationControls,
   aiErrorMessage,
+  limitText,
   translationErrorMessage,
   useMeeting,
   usePurpleCallioAI,
   useTranslation,
+  useTranslationLanguages,
 } from '@purplecallio/react';
 import './App.css';
 
@@ -134,7 +135,7 @@ function CallRoom({ call, currentUser, onHangUp }) {
 // The SDK's ParticipantTile only plays sound through its <video> element,
 // which it renders only when there is video — so audio-only calls would be
 // silent. Tiles stay muted and all remote audio goes through this element.
-function RemoteAudio({ stream }) {
+function RemoteAudio({ stream, volume = 1 }) {
   const { engine } = useMeeting();
   const audioRef = useRef(null);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
@@ -146,6 +147,10 @@ function RemoteAudio({ stream }) {
     if (!engine || !audioRef.current) return undefined;
     return engine.registerAudioElement(audioRef.current);
   }, [engine]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
+  }, [volume]);
 
   useEffect(() => {
     const element = audioRef.current;
@@ -185,6 +190,161 @@ const TRANSLATION_API_URL = `${API_BASE_URL}/api`;
 // covers the brief signaling handshake before that (and reconnects).
 const CALL_READY_STATES = new Set(['connected', 'joined']);
 
+// Volume of the other person's real voice while their translated voice is
+// coming through. The SDK only ducks it while a translated phrase plays, so
+// without this you hear them twice: live, then again from the AI.
+const QUIET_ORIGINAL_VOLUME = 0.15;
+
+const DEFAULT_SHARED_TRANSLATION = { enabled: false, startedBy: null, version: 0, languages: {} };
+
+// Whoever answers a translated call most likely speaks what the starter wants to hear.
+function mirrorLanguages(peer, mine) {
+  return {
+    speak: peer.hear || mine.speak,
+    hear: peer.speak && peer.speak !== 'auto' ? peer.speak : mine.hear,
+  };
+}
+
+function useLanguageName() {
+  const { languages } = useTranslationLanguages(TRANSLATION_API_URL);
+  return (code) => {
+    if (code === 'auto') return 'any language';
+    return languages.find((language) => language.code === code)?.name || code;
+  };
+}
+
+/**
+ * Live Translate as one switch for the whole call. Each browser can only
+ * translate its own microphone, so when either person turns translation on
+ * (or off) the server flips it for both and the other side follows.
+ */
+function useCallTranslation({ call, currentUser, callReady }) {
+  const { engine } = useMeeting();
+  // meeting.translation reuses this call's token, microphone and remote audio.
+  const translation = useTranslation({ client: engine?.translation ?? null });
+  const me = currentUser.email;
+  const peer = call.caller === me ? call.receiver : call.caller;
+
+  const [shared, setShared] = useState(call.translation || DEFAULT_SHARED_TRANSLATION);
+  const [languages, setLanguages] = useState(
+    () => call.translation?.languages?.[me] || { speak: 'en', hear: 'hi' },
+  );
+  const [mode, setMode] = useState('voice');
+  const [hearOriginal, setHearOriginal] = useState(false);
+  const [needsTap, setNeedsTap] = useState(false);
+  const languagesTouched = useRef(false);
+  const pendingWrites = useRef(0);
+  const autoStarted = useRef(false);
+
+  // Adopt the polled server state unless one of our own writes is in flight.
+  useEffect(() => {
+    const next = call.translation;
+    if (!next || pendingWrites.current > 0) return;
+    setShared((prev) => (next.version > prev.version ? next : prev));
+  }, [call.translation]);
+
+  const writeShared = useCallback(async (body) => {
+    pendingWrites.current += 1;
+    try {
+      const data = await apiRequest(`/api/calls/${call.id}/translation`, {
+        method: 'POST',
+        body: JSON.stringify({ userEmail: me, ...body }),
+      });
+      const next = data.call?.translation;
+      if (next) setShared((prev) => (next.version >= prev.version ? next : prev));
+    } catch (error) {
+      console.error('Could not sync translation with the other participant:', error);
+    } finally {
+      pendingWrites.current -= 1;
+    }
+  }, [call.id, me]);
+
+  const originalVolume = hearOriginal ? QUIET_ORIGINAL_VOLUME : 0;
+
+  const start = async () => {
+    setNeedsTap(false);
+    setShared((prev) => ({ ...prev, enabled: true, startedBy: prev.enabled ? prev.startedBy : me }));
+    void writeShared({ enabled: true, ...languages });
+    const ready = await translation.enable({ ...languages, mode, originalVolume });
+    if (!ready && shared.startedBy !== peer) void writeShared({ enabled: false });
+  };
+
+  const stop = () => {
+    translation.disable();
+    setNeedsTap(false);
+    setShared((prev) => ({ ...prev, enabled: false, startedBy: null }));
+    void writeShared({ enabled: false });
+  };
+
+  const peerLanguages = shared.languages?.[peer];
+
+  // Follow the shared switch: start when the other person turned it on, stop when it is off.
+  useEffect(() => {
+    if (!shared.enabled) {
+      autoStarted.current = false;
+      if (translation.enabled) translation.disable();
+      return;
+    }
+    if (shared.startedBy === me || translation.enabled || !callReady || autoStarted.current) return;
+    autoStarted.current = true;
+
+    const next = !languagesTouched.current && peerLanguages ? mirrorLanguages(peerLanguages, languages) : languages;
+    setLanguages(next);
+    void writeShared(next);
+    // Translated audio can only play after the user has interacted with the page.
+    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+      setNeedsTap(true);
+      return;
+    }
+    translation.enable({ ...next, mode, originalVolume }).then((ready) => setNeedsTap(!ready));
+  }, [shared.enabled, shared.startedBy, translation, callReady, me, peerLanguages, languages, mode, originalVolume, writeShared]);
+
+  const prefillFromPeer = () => {
+    if (!languagesTouched.current && peerLanguages) setLanguages((mine) => mirrorLanguages(peerLanguages, mine));
+  };
+
+  const changeLanguages = (update) => {
+    languagesTouched.current = true;
+    setLanguages((current) => ({ ...current, ...update }));
+    if (translation.enabled) translation.setLanguages(update);
+    void writeShared(update);
+  };
+
+  const changeMode = (next) => {
+    setMode(next);
+    if (translation.enabled) translation.setMode(next);
+  };
+
+  const changeHearOriginal = (next) => {
+    setHearOriginal(next);
+    translation.setOriginalVolume(next ? QUIET_ORIGINAL_VOLUME : 0);
+  };
+
+  // While the other person's speech is being voiced for us, keep their real
+  // voice down the whole time, not just while a translated phrase plays.
+  const { state } = translation;
+  const voiceComingThrough = state.status === 'ready' && state.mode === 'voice' && Boolean(state.peer?.connected);
+  const remoteVolume = voiceComingThrough ? originalVolume : 1;
+
+  return {
+    translation,
+    peer,
+    startedByPeer: shared.enabled && shared.startedBy === peer,
+    languages,
+    mode,
+    hearOriginal,
+    // Only meaningful while the other person still has translation on.
+    needsTap: needsTap && shared.enabled,
+    remoteVolume,
+    start,
+    stop,
+    prefillFromPeer,
+    changeLanguages,
+    changeMode,
+    changeHearOriginal,
+  };
+}
+
 function TranslateIcon({ active }) {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? '#c4b5fd' : '#94A3B8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -198,71 +358,160 @@ function TranslateIcon({ active }) {
   );
 }
 
-function TranslateButton({ translation, speak, hear }) {
-  const { engine, connectionState } = useMeeting();
+function TranslateButton({ callTranslation, callReady, setupOpen, onOpenSetup, onCloseSetup }) {
+  const { translation, needsTap, start, stop } = callTranslation;
   const { enabled, state } = translation;
   const starting = state.status === 'connecting';
-  const callReady = Boolean(engine) && CALL_READY_STATES.has(connectionState);
+
+  const handleClick = () => {
+    if (enabled) stop();
+    else if (needsTap) start();
+    else if (setupOpen) onCloseSetup();
+    else onOpenSetup();
+  };
 
   return (
     <ControlButton
-      label={starting ? 'Starting…' : enabled ? 'Stop translate' : 'Translate'}
-      title={callReady ? undefined : 'Available once the call is connected'}
-      active={enabled}
+      label={starting ? 'Starting…' : enabled ? 'Stop translating' : 'Translate'}
+      title={callReady || enabled ? undefined : 'Available once the call is connected'}
+      active={enabled || setupOpen}
       activeColor="#4c1d95"
       size={56}
       disabled={!enabled && !callReady}
-      onClick={enabled ? translation.disable : () => translation.enable({ speak, hear, mode: 'voice' })}
+      onClick={handleClick}
     >
-      <TranslateIcon active={enabled} />
+      <TranslateIcon active={enabled || setupOpen} />
     </ControlButton>
   );
 }
 
-function TranslationPanel({ peerName, translation, speak, hear, onSpeakChange, onHearChange }) {
-  const { enabled, state, error, repeatRequests } = translation;
-
-  const changeLanguages = (languages) => {
-    if (languages.speak) onSpeakChange(languages.speak);
-    if (languages.hear) onHearChange(languages.hear);
-    if (enabled) translation.setLanguages(languages);
-  };
-
+function TranslationSetup({ callTranslation, onCancel, onStart }) {
+  const { peer, languages, changeLanguages } = callTranslation;
   return (
-    <section className="translate-panel" aria-label="Live translation">
-      <div className="translate-header">
-        <div>
-          <h4>🌐 Live translation</h4>
-          <p>
-            {state.status === 'ready'
-              ? state.peer?.connected
-                ? `${displayName(peerName)} is translating too`
-                : `Waiting for ${displayName(peerName)} to turn on translation…`
-              : 'Pick your languages, then press Translate in the call controls.'}
-          </p>
-        </div>
+    <section className="translate-card" aria-label="Start live translation">
+      <div>
+        <h4>🌐 Translate this call</h4>
+        <p className="translate-muted">
+          Pick your languages. Translation turns on for {displayName(peer)} too, so you each hear the other in your own language.
+        </p>
       </div>
-
       <div className="translate-languages">
         <LanguagePicker
           label="I speak"
-          value={speak}
+          value={languages.speak}
           onChange={(code) => changeLanguages({ speak: code })}
           apiUrl={TRANSLATION_API_URL}
           allowAuto
         />
         <LanguagePicker
-          label="I want to hear"
-          value={hear}
+          label={`Translate ${displayName(peer)} into`}
+          value={languages.hear}
           onChange={(code) => changeLanguages({ hear: code })}
           apiUrl={TRANSLATION_API_URL}
-          require={state.mode === 'captions' ? 'captions' : 'voice'}
+          require="voice"
         />
       </div>
+      <p className="translate-muted">🎧 Headphones work best, so the translated voice doesn't echo into your mic.</p>
+      <div className="translate-actions">
+        <button type="button" className="icon-button" onClick={onCancel}>Cancel</button>
+        <button type="button" className="icon-button primary" onClick={onStart}>Start translating</button>
+      </div>
+    </section>
+  );
+}
+
+function TranslationPanel({ callTranslation }) {
+  const {
+    translation, peer, startedByPeer, languages, mode, hearOriginal, needsTap,
+    start, changeLanguages, changeMode, changeHearOriginal,
+  } = callTranslation;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const languageName = useLanguageName();
+  const { state, error, repeatRequests } = translation;
+  const peerName = displayName(peer);
+
+  if (needsTap) {
+    return (
+      <section className="translate-card translate-invite" aria-label="Live translation">
+        <p>🌐 <strong>{peerName}</strong> turned on translation.</p>
+        <button type="button" className="icon-button primary" onClick={start}>Join translation</button>
+      </section>
+    );
+  }
+
+  let title;
+  let detail;
+  if (state.status === 'connecting') {
+    title = 'Starting translation…';
+    detail = startedByPeer ? `${peerName} turned on translation.` : `Turning it on for ${peerName} too.`;
+  } else if (!state.peer?.connected) {
+    title = `Waiting for ${peerName}…`;
+    detail = 'Translation starts as soon as their side connects.';
+  } else {
+    title = mode === 'voice'
+      ? `You hear ${peerName} in ${languageName(languages.hear)}`
+      : `Captions for ${peerName} in ${languageName(languages.hear)}`;
+    detail = state.peer.hear
+      ? `${peerName} hears you in ${languageName(state.peer.hear)}.`
+      : `${peerName} is translating too.`;
+  }
+
+  return (
+    <section className="translate-card is-live" aria-label="Live translation">
+      <div className="translate-status">
+        <span className={`translate-dot ${state.status === 'ready' && state.peer?.connected ? 'is-live' : ''}`} />
+        <div className="translate-status-text">
+          <strong>{title}</strong>
+          <p className="translate-muted">{detail}</p>
+        </div>
+        <button type="button" className="translate-link" onClick={() => setSettingsOpen((open) => !open)}>
+          {settingsOpen ? 'Done' : 'Settings'}
+        </button>
+      </div>
+
+      {settingsOpen ? (
+        <div className="translate-settings">
+          <div className="translate-languages">
+            <LanguagePicker
+              label="I speak"
+              value={languages.speak}
+              onChange={(code) => changeLanguages({ speak: code })}
+              apiUrl={TRANSLATION_API_URL}
+              allowAuto
+            />
+            <LanguagePicker
+              label={`Translate ${peerName} into`}
+              value={languages.hear}
+              onChange={(code) => changeLanguages({ hear: code })}
+              apiUrl={TRANSLATION_API_URL}
+              require={mode === 'captions' ? 'captions' : 'voice'}
+            />
+          </div>
+          <div className="translate-segmented" role="radiogroup" aria-label="How to translate">
+            <button type="button" role="radio" aria-checked={mode === 'voice'} onClick={() => changeMode('voice')}>
+              Voice + captions
+            </button>
+            <button type="button" role="radio" aria-checked={mode === 'captions'} onClick={() => changeMode('captions')}>
+              Captions only
+            </button>
+          </div>
+          {mode === 'voice' ? (
+            <label className="translate-check">
+              <input type="checkbox" checked={hearOriginal} onChange={(event) => changeHearOriginal(event.target.checked)} />
+              Also hear {peerName}&apos;s real voice quietly in the background
+            </label>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? <p className="error-message">{translationErrorMessage(error.code)}</p> : null}
 
-      {enabled ? <TranslationControls translation={translation} /> : null}
+      {state.limit ? (
+        <div className="translate-repeat">
+          <span>{limitText(state.limit)}</span>
+          <button type="button" onClick={translation.dismissLimit}>OK</button>
+        </div>
+      ) : null}
 
       {repeatRequests.map((request) => (
         <div className="translate-repeat" key={request.phraseId}>
@@ -277,9 +526,12 @@ function TranslationPanel({ peerName, translation, speak, hear, onSpeakChange, o
         <DualViewCaptions
           className="translate-captions"
           translation={translation}
+          showLayoutSwitch={false}
           youLabel="You"
-          peerLabel={displayName(peerName)}
+          peerLabel={peerName}
         />
+      ) : state.peer?.connected ? (
+        <p className="translate-muted">Start talking — captions will appear here.</p>
       ) : null}
     </section>
   );
@@ -380,10 +632,9 @@ function AiAgentCard({ currentUser, signalUrl }) {
 
 function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
   const { engine, join, leave, connectionState, localStream, remoteStream } = useMeeting();
-  // meeting.translation reuses this call's token, microphone and remote audio.
-  const translation = useTranslation({ client: engine?.translation ?? null });
-  const [speak, setSpeak] = useState('en');
-  const [hear, setHear] = useState('hi');
+  const callReady = Boolean(engine) && CALL_READY_STATES.has(connectionState);
+  const callTranslation = useCallTranslation({ call, currentUser, callReady });
+  const [translateSetupOpen, setTranslateSetupOpen] = useState(false);
   const isVideo = call.type === 'video';
   const remoteUser = call.caller === currentUser.email ? call.receiver : call.caller;
 
@@ -408,7 +659,7 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
     );
   }, [remoteStream]);
 
-  const waitingLabel = CALL_READY_STATES.has(connectionState)
+  const waitingLabel = callReady
     ? `Waiting for ${displayName(remoteUser)} to join…`
     : 'Connecting…';
 
@@ -425,7 +676,7 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
         <ConnectionStatus />
       </header>
 
-      <RemoteAudio stream={remoteStream} />
+      <RemoteAudio stream={remoteStream} volume={callTranslation.remoteVolume} />
 
       {isVideo ? (
         <div className="video-stage">
@@ -462,18 +713,35 @@ function MeetingShell({ call, currentUser, onHangUp, onJoinError }) {
       <div className="call-controls">
         <MicrophoneButton />
         {isVideo ? <CameraButton /> : null}
-        <TranslateButton translation={translation} speak={speak} hear={hear} />
+        <TranslateButton
+          callTranslation={callTranslation}
+          callReady={callReady}
+          setupOpen={translateSetupOpen}
+          onOpenSetup={() => {
+            callTranslation.prefillFromPeer();
+            setTranslateSetupOpen(true);
+          }}
+          onCloseSetup={() => setTranslateSetupOpen(false)}
+        />
         <LeaveButton label="Hang up" onLeave={onHangUp} />
       </div>
 
-      <TranslationPanel
-        peerName={remoteUser}
-        translation={translation}
-        speak={speak}
-        hear={hear}
-        onSpeakChange={setSpeak}
-        onHearChange={setHear}
-      />
+      {callTranslation.translation.enabled || callTranslation.needsTap ? (
+        <TranslationPanel callTranslation={callTranslation} />
+      ) : translateSetupOpen ? (
+        <TranslationSetup
+          callTranslation={callTranslation}
+          onCancel={() => setTranslateSetupOpen(false)}
+          onStart={() => {
+            setTranslateSetupOpen(false);
+            callTranslation.start();
+          }}
+        />
+      ) : callTranslation.translation.error ? (
+        <p className="error-message call-error">
+          {translationErrorMessage(callTranslation.translation.error.code)}
+        </p>
+      ) : null}
     </div>
   );
 }
