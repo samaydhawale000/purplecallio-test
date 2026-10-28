@@ -10,7 +10,7 @@
     "preview": "vite preview --host 0.0.0.0 --port 3002"
   },
   "dependencies": {
-    "@purplecallio/react": "^0.2.0",
+    "@purplecallio/react": "^0.2.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -22,6 +22,6 @@
     "vite": "^8.3.0"
   },
   "overrides": {
-    "@purplecallio/sdk": "^0.3.0"
+    "@purplecallio/sdk": "^0.3.1"
   }
 }
