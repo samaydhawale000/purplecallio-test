@@ -605,6 +605,13 @@ input:focus-visible {
   color: #e2e8f0;
 }
 
+.translate-popover {
+  width: min(100%, 420px);
+  margin: 0;
+  background: var(--stage-2);
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+}
+
 .translate-invite {
   grid-template-columns: 1fr auto;
   align-items: center;
